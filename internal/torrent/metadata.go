@@ -8,10 +8,11 @@ import (
 const DefaultPieceSize int64 = 256 * 1024
 
 type FileMetadata struct {
-	Name       string
-	Size       int64
-	PieceSize  int64
-	PieceCount int
+	Name        string
+	Size        int64
+	PieceSize   int64
+	PieceCount  int
+	PieceHashes [][32]byte
 }
 
 func CalculatePieceCount(fileSize, pieceSize int64) int {
@@ -46,6 +47,15 @@ func BuildFileMetadata(path string) (FileMetadata, error) {
 		Size:       info.Size(),
 		PieceSize:  DefaultPieceSize,
 		PieceCount: pieceCount,
+	}
+
+	for i := range pieceCount {
+		readBytes, err := ReadPiece(file, metadata, i)
+		if err != nil {
+			return FileMetadata{}, err
+		}
+		hash := HashPiece(readBytes)
+		metadata.PieceHashes = append(metadata.PieceHashes, hash)
 	}
 
 	return metadata, nil

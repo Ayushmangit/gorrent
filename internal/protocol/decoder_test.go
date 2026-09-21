@@ -16,7 +16,6 @@ func TestReadMessageHello(t *testing.T) {
 	if err := WriteMessage(&buf, original); err != nil {
 		t.Fatal("error writing hello\n")
 	}
-
 	received, err := ReadMessage(&buf)
 	if err != nil {
 		t.Fatalf("error reading message\n %v", err)
@@ -74,5 +73,4 @@ func TestReadPieceRequestMessage(t *testing.T) {
 			received.Payload,
 		)
 	}
-
 }

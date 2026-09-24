@@ -1,39 +1,122 @@
 package main
 
 import (
-	"encoding/binary"
-	"fmt"
+	"errors"
+	"io"
+	"log"
+	"math"
 	"net"
+	"os"
+
+	"github.com/Ayushmangit/gorrent/internal/protocol"
+	"github.com/Ayushmangit/gorrent/internal/torrent"
 )
 
 func main() {
-	conn, err := net.Dial("tcp", ":9000")
+	if len(os.Args) != 2 {
+		log.Fatal("usage: sender <file>")
+	}
+	filePath := os.Args[1]
+
+	metadata, err := torrent.BuildFileMetadata(filePath)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
-	fmt.Println("sender is connected to port ", conn.RemoteAddr())
+	log.Printf(
+		"sharing %s (%d bytes, %d pieces)",
+		metadata.Name,
+		metadata.Size,
+		metadata.PieceCount,
+	)
 
-	sendMessage(conn, "hello")
-	sendMessage(conn, "I am peer 1")
-	sendMessage(conn, "send me the 7th block")
+	// NOTE: validate the sizes
+	if metadata.Size < 0 {
+		log.Fatal(errors.New("invalid file size"))
+	}
 
+	if metadata.PieceSize <= 0 ||
+		metadata.PieceSize > math.MaxUint32 {
+		log.Fatal(errors.New("invalid piece size"))
+	}
+
+	if metadata.PieceCount < 0 ||
+		uint64(metadata.PieceCount) > math.MaxUint32 {
+		log.Fatal(errors.New("invalid piece count"))
+	}
+
+	info := protocol.FileInfo{
+		Name:        metadata.Name,
+		Size:        uint64(metadata.Size),
+		PieceSize:   uint32(metadata.PieceSize),
+		PieceCount:  uint32(metadata.PieceCount),
+		PieceHashes: metadata.PieceHashes,
+	}
+
+	msg, err := protocol.NewFileInfo(info)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	listener, err := net.Listen("tcp", ":9000")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer listener.Close()
+
+	log.Println("waiting for peer on :9000")
+	conn, err := listener.Accept()
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer conn.Close()
-}
 
-func sendMessage(conn net.Conn, message string) error {
-	length := uint32(len(message))
-	lengthBytea := make([]byte, 4)
+	log.Printf("peer connected: %s", conn.RemoteAddr())
+	err = protocol.WriteMessage(conn, msg)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	binary.BigEndian.PutUint32(lengthBytea, length)
-	messageBytea := []byte(message)
-	_, err := conn.Write(lengthBytea)
-	if err != nil {
-		fmt.Println("error sending the header")
+	for {
+		requestMsg, err := protocol.ReadMessage(conn)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				log.Println("receiver disconnected")
+				break
+			}
+			log.Fatal(err)
+		}
+
+		pieceIndex, err := protocol.ParsePieceRequest(requestMsg)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if uint64(pieceIndex) >= uint64(metadata.PieceCount) {
+			log.Fatal("invalid piece index")
+		}
+
+		piece, err := torrent.ReadPiece(
+			file,
+			metadata,
+			int(pieceIndex),
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		response := protocol.NewPieceData(pieceIndex, piece)
+
+		if err := protocol.WriteMessage(conn, response); err != nil {
+			log.Fatal(err)
+		}
+
+		log.Printf("sent piece %d", pieceIndex)
 	}
-	conn.Write(messageBytea)
-	if err != nil {
-		fmt.Println("error sending the message")
-	}
-	return nil
 }
